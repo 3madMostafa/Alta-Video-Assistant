@@ -658,11 +658,11 @@ def format_entry_response(entries: List[Dict], days: Optional[int] = None) -> st
         
         # Determine access status based strictly on event_type
         if event_type == 'ACCESS_GRANTED':
-            status_text = "✅ Granted"
+            status_text = "Granted"
         elif event_type == 'ACCESS_DENIED':
-            status_text = "❌ Denied"
+            status_text = "Denied"
         elif event_type == 'HELD_OPEN':
-            status_text = "🚪 Held Open"
+            status_text = "Held Open"
         else:
             status_text = event_type
         
@@ -777,12 +777,12 @@ def generate_response(intent_data: Dict) -> str:
             st.session_state.pending_unlock = None
             st.session_state.awaiting_confirmation = False
             
-            return f"✅ Successfully unlocked **{door_name}**!"
+            return f"Successfully unlocked **{door_name}**!"
         
         except AltaAPIError as e:
             st.session_state.pending_unlock = None
             st.session_state.awaiting_confirmation = False
-            return f"❌ Failed to unlock door: {str(e)}"
+            return f"Failed to unlock door: {str(e)}"
     
     # ========== NEW: UNLOCK BY ID ==========
     if intent == "unlock_by_id":
@@ -930,7 +930,7 @@ Please rephrase your request."""
         response += format_entry_response(data, days)
     elif response_type == "unlock":
         access_point_id = api_response.get("access_point_id")
-        response += f"✅ Successfully unlocked access point {access_point_id}!"
+        response += f"Successfully unlocked access point {access_point_id}!"
     else:
         response += "Request completed successfully."
     
@@ -1057,7 +1057,7 @@ with st.sidebar:
         st.rerun()
     
     # ========== NEW: UNLOCK DOOR BUTTON ==========
-    if st.button("🔓 Unlock Door", use_container_width=True):
+    if st.button("Unlock Door", use_container_width=True):
         initiate_unlock_door_flow()
         st.rerun()
     
