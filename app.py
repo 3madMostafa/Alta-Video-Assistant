@@ -37,6 +37,13 @@ if "api_client" not in st.session_state:
     st.session_state.api_client = None
 if "frequent_questions" not in st.session_state:
     st.session_state.frequent_questions = {}
+# ========== NEW: SESSION STATE FOR UNLOCK FLOW ==========
+if "pending_unlock" not in st.session_state:
+    st.session_state.pending_unlock = None  # Stores {id, name} of door to unlock
+if "pending_door_options" not in st.session_state:
+    st.session_state.pending_door_options = None  # Stores list of matched doors
+if "awaiting_confirmation" not in st.session_state:
+    st.session_state.awaiting_confirmation = False  # Flag for confirmation state
 
 # ========== AUTHENTICATION & CLIENT INITIALIZATION ==========
 
@@ -110,6 +117,78 @@ def get_most_frequent_questions(top_n: int = 3) -> List[str]:
     )
     return [q[0] for q in sorted_questions[:top_n]]
 
+# ========== NEW: UNLOCK HELPER FUNCTIONS ==========
+
+def find_door_by_name(door_name: str, access_points: List[Dict]) -> List[Dict]:
+    """
+    Find access points matching the given door name (case-insensitive contains)
+    
+    Args:
+        door_name: Name or partial name of the door
+        access_points: List of all access points
+        
+    Returns:
+        List of matching access points
+    """
+    door_name_lower = door_name.lower()
+    matches = []
+    
+    for point in access_points:
+        point_name = point.get('name', point.get('access_point_name', '')).lower()
+        if door_name_lower in point_name:
+            matches.append(point)
+    
+    logger.info(f"Found {len(matches)} door(s) matching '{door_name}'")
+    return matches
+
+def extract_access_point_id(message: str) -> Optional[str]:
+    """
+    Extract access point ID from user message if present
+    
+    Args:
+        message: User message
+        
+    Returns:
+        Access point ID or None
+    """
+    # Look for patterns like "door 123", "access point 456", "id 789"
+    import re
+    patterns = [
+        r'door\s+(\d+)',
+        r'access\s+point\s+(\d+)',
+        r'id\s+(\d+)',
+        r'#(\d+)'
+    ]
+    
+    message_lower = message.lower()
+    for pattern in patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            return match.group(1)
+    
+    return None
+
+def extract_door_name(message: str) -> Optional[str]:
+    """
+    Extract door name from unlock request
+    
+    Args:
+        message: User message
+        
+    Returns:
+        Door name or None
+    """
+    # Remove common unlock keywords to get the door name
+    message_lower = message.lower()
+    
+    # Remove unlock-related phrases
+    for phrase in ['unlock', 'open', 'door', 'access point', 'the']:
+        message_lower = message_lower.replace(phrase, '')
+    
+    # Clean and return
+    door_name = message_lower.strip()
+    return door_name if door_name else None
+
 # ========== INTENT ANALYSIS ==========
 
 def analyze_intent(user_message: str) -> Dict:
@@ -123,6 +202,103 @@ def analyze_intent(user_message: str) -> Dict:
         Dictionary with intent, API details, and follow-up suggestions
     """
     message_lower = user_message.lower()
+    
+    # ========== NEW: CHECK FOR CONFIRMATION RESPONSES ==========
+    if st.session_state.awaiting_confirmation:
+        # User is responding to a confirmation prompt
+        if any(word in message_lower for word in ['yes', 'confirm', 'ok', 'yeah', 'sure', 'proceed']):
+            return {
+                "intent": "confirm_unlock",
+                "api": "unlock_access_point",
+                "params": {},
+                "uses_context": False,
+                "confidence_message": None,
+                "requires_confirmation": False,
+                "follow_up_suggestions": []
+            }
+        elif any(word in message_lower for word in ['no', 'cancel', 'stop', 'abort', 'nevermind']):
+            return {
+                "intent": "cancel_unlock",
+                "api": None,
+                "params": {},
+                "uses_context": False,
+                "confidence_message": None,
+                "requires_confirmation": False,
+                "follow_up_suggestions": [
+                    "What doors do I have access to?",
+                    "Show today's entries"
+                ]
+            }
+    
+    # ========== NEW: CHECK FOR DOOR SELECTION FROM OPTIONS ==========
+    if st.session_state.pending_door_options:
+        # User might be selecting from numbered options
+        import re
+        number_match = re.search(r'\b(\d+)\b', user_message)
+        if number_match:
+            return {
+                "intent": "select_door_option",
+                "api": None,
+                "params": {"selection": int(number_match.group(1))},
+                "uses_context": False,
+                "confidence_message": None,
+                "requires_confirmation": False,
+                "follow_up_suggestions": []
+            }
+    
+    # ========== NEW: UNLOCK ACCESS POINT ==========
+    if any(phrase in message_lower for phrase in ['unlock', 'open door', 'unlock door', 'unlock access point']):
+        # Try to extract access point ID
+        access_point_id = extract_access_point_id(user_message)
+        
+        if access_point_id:
+            # Direct ID provided
+            return {
+                "intent": "unlock_by_id",
+                "api": "unlock_access_point",
+                "params": {"access_point_id": access_point_id},
+                "uses_context": False,
+                "confidence_message": f"Preparing to unlock access point {access_point_id}.",
+                "requires_confirmation": True,
+                "follow_up_suggestions": []
+            }
+        else:
+            # Try to extract door name
+            door_name = extract_door_name(user_message)
+            return {
+                "intent": "unlock_by_name",
+                "api": "unlock_access_point",
+                "params": {"door_name": door_name},
+                "uses_context": False,
+                "confidence_message": "Searching for matching door.",
+                "requires_confirmation": True,
+                "follow_up_suggestions": []
+            }
+    
+    # ========== NEW: GET ACCESS EVENT BY GUID ==========
+    if any(phrase in message_lower for phrase in ['event', 'access event', 'show event', 'event details']):
+        # Try to extract GUID (usually a UUID pattern)
+        import re
+        # Look for UUID pattern or any long alphanumeric string
+        guid_match = re.search(r'([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})', message_lower)
+        if not guid_match:
+            # Try alphanumeric pattern
+            guid_match = re.search(r'\b([a-zA-Z0-9]{20,})\b', user_message)
+        
+        if guid_match:
+            guid = guid_match.group(1)
+            return {
+                "intent": "get_event_by_guid",
+                "api": "get_access_event_by_guid",
+                "params": {"guid": guid},
+                "uses_context": False,
+                "confidence_message": f"Retrieving access event {guid}.",
+                "requires_confirmation": False,
+                "follow_up_suggestions": [
+                    "Show today's entries",
+                    "Show last 7 days"
+                ]
+            }
     
     # ===== ACCESS HISTORY (MUST BE FIRST TO CATCH ALL VARIATIONS) =====
     if any(phrase in message_lower for phrase in ["access history", "my history", "access log", "entry log", "access logs", "entry logs"]):
@@ -385,6 +561,27 @@ def execute_api_call(intent_data: Dict) -> Dict:
             granted = client.filter_granted_entries(entries)
             return {"success": True, "data": granted, "type": "entries"}
         
+        # ========== NEW: UNLOCK ACCESS POINT ==========
+        elif api_method == "unlock_access_point":
+            access_point_id = params.get("access_point_id")
+            if access_point_id:
+                result = client.unlock_access_point(access_point_id)
+                return {"success": True, "data": result, "type": "unlock", "access_point_id": access_point_id}
+            else:
+                return {"success": False, "error": "No access point ID provided"}
+        
+        # ========== NEW: GET ACCESS EVENT BY GUID ==========
+        elif api_method == "get_access_event_by_guid":
+            guid = params.get("guid")
+            if guid:
+                event = client.get_access_event_by_guid(guid)
+                if event:
+                    return {"success": True, "data": [event], "type": "entries"}
+                else:
+                    return {"success": False, "error": f"Access event with GUID {guid} not found"}
+            else:
+                return {"success": False, "error": "No GUID provided"}
+        
         else:
             return {"success": False, "error": "Unknown API method"}
             
@@ -416,10 +613,12 @@ def format_access_points_response(points: List[Dict]) -> str:
         name = point.get('name', point.get('access_point_name', 'Unknown Point'))
         site = point.get('site_name', point.get('site', 'Unknown Site'))
         point_type = point.get('type', 'Access Point')
+        point_id = point.get('id', 'N/A')
         
         response += f"**{name}**\n"
         response += f"   Site: {site}\n"
-        response += f"   Type: {point_type}\n\n"
+        response += f"   Type: {point_type}\n"
+        response += f"   ID: {point_id}\n\n"
     
     return response
 
@@ -455,14 +654,15 @@ def format_entry_response(entries: List[Dict], days: Optional[int] = None) -> st
         site = entry.get('site_name', 'Unknown Site')
         event_type = entry.get('event_type', 'UNKNOWN')
         cardholder = entry.get('cardholder_name', '')
+        guid = entry.get('guid', entry.get('id', ''))
         
         # Determine access status based strictly on event_type
         if event_type == 'ACCESS_GRANTED':
-            status_text = "Granted"
+            status_text = "✅ Granted"
         elif event_type == 'ACCESS_DENIED':
-            status_text = "Denied"
+            status_text = "❌ Denied"
         elif event_type == 'HELD_OPEN':
-            status_text = "Held Open"
+            status_text = "🚪 Held Open"
         else:
             status_text = event_type
         
@@ -481,6 +681,8 @@ def format_entry_response(entries: List[Dict], days: Optional[int] = None) -> st
         response += f"   Time: {time_str}\n"
         if cardholder:
             response += f"   User: {cardholder}\n"
+        if guid:
+            response += f"   Event ID: {guid}\n"
         response += "\n"
     
     if len(sorted_entries) > 20:
@@ -530,6 +732,130 @@ def generate_response(intent_data: Dict) -> str:
     # Track question
     track_question(intent)
     
+    # ========== NEW: CANCEL UNLOCK ==========
+    if intent == "cancel_unlock":
+        st.session_state.pending_unlock = None
+        st.session_state.pending_door_options = None
+        st.session_state.awaiting_confirmation = False
+        return "Unlock cancelled. How else can I help you?"
+    
+    # ========== NEW: SELECT DOOR FROM OPTIONS ==========
+    if intent == "select_door_option":
+        selection = intent_data["params"]["selection"]
+        options = st.session_state.pending_door_options
+        
+        if not options or selection < 1 or selection > len(options):
+            st.session_state.pending_door_options = None
+            return "Invalid selection. Please try again or specify the door name."
+        
+        selected_door = options[selection - 1]
+        door_name = selected_door.get('name', selected_door.get('access_point_name', 'Unknown Door'))
+        door_id = selected_door.get('id')
+        
+        # Store pending unlock and request confirmation
+        st.session_state.pending_unlock = {"id": door_id, "name": door_name}
+        st.session_state.pending_door_options = None
+        st.session_state.awaiting_confirmation = True
+        
+        return f"You selected **{door_name}**.\n\nDo you want me to unlock this door? (yes/no)"
+    
+    # ========== NEW: CONFIRM UNLOCK ==========
+    if intent == "confirm_unlock":
+        if not st.session_state.pending_unlock:
+            st.session_state.awaiting_confirmation = False
+            return "No unlock operation pending. Please specify which door to unlock."
+        
+        door_id = st.session_state.pending_unlock["id"]
+        door_name = st.session_state.pending_unlock["name"]
+        
+        # Execute unlock
+        try:
+            client = st.session_state.api_client
+            client.unlock_access_point(door_id)
+            
+            # Clear pending state
+            st.session_state.pending_unlock = None
+            st.session_state.awaiting_confirmation = False
+            
+            return f"✅ Successfully unlocked **{door_name}**!"
+        
+        except AltaAPIError as e:
+            st.session_state.pending_unlock = None
+            st.session_state.awaiting_confirmation = False
+            return f"❌ Failed to unlock door: {str(e)}"
+    
+    # ========== NEW: UNLOCK BY ID ==========
+    if intent == "unlock_by_id":
+        access_point_id = intent_data["params"]["access_point_id"]
+        
+        # Get access point name for confirmation
+        try:
+            client = st.session_state.api_client
+            all_points = client.get_access_points()
+            matching_point = next((p for p in all_points if str(p.get('id')) == access_point_id), None)
+            
+            if matching_point:
+                door_name = matching_point.get('name', matching_point.get('access_point_name', f'Door {access_point_id}'))
+            else:
+                door_name = f"Access Point {access_point_id}"
+            
+            # Store pending unlock and request confirmation
+            st.session_state.pending_unlock = {"id": access_point_id, "name": door_name}
+            st.session_state.awaiting_confirmation = True
+            
+            return f"Do you want me to unlock **{door_name}**? (yes/no)"
+        
+        except Exception as e:
+            logger.error(f"Error finding access point: {e}")
+            # Store anyway for unlock
+            st.session_state.pending_unlock = {"id": access_point_id, "name": f"Access Point {access_point_id}"}
+            st.session_state.awaiting_confirmation = True
+            return f"Do you want me to unlock access point {access_point_id}? (yes/no)"
+    
+    # ========== NEW: UNLOCK BY NAME ==========
+    if intent == "unlock_by_name":
+        door_name = intent_data["params"].get("door_name")
+        
+        if not door_name:
+            return "Please specify which door you want to unlock."
+        
+        # Search for matching doors
+        try:
+            client = st.session_state.api_client
+            all_points = client.get_access_points()
+            matches = find_door_by_name(door_name, all_points)
+            
+            if len(matches) == 0:
+                return f"No doors found matching '{door_name}'. Please check the door name and try again."
+            
+            elif len(matches) == 1:
+                # Single match - request confirmation
+                matched_door = matches[0]
+                matched_name = matched_door.get('name', matched_door.get('access_point_name', 'Unknown Door'))
+                matched_id = matched_door.get('id')
+                
+                st.session_state.pending_unlock = {"id": matched_id, "name": matched_name}
+                st.session_state.awaiting_confirmation = True
+                
+                return f"Found door: **{matched_name}**\n\nDo you want me to unlock this door? (yes/no)"
+            
+            else:
+                # Multiple matches - ask user to choose
+                st.session_state.pending_door_options = matches
+                
+                response = f"Found {len(matches)} doors matching '{door_name}':\n\n"
+                for idx, point in enumerate(matches, 1):
+                    point_name = point.get('name', point.get('access_point_name', 'Unknown'))
+                    site = point.get('site_name', 'Unknown Site')
+                    response += f"{idx}. **{point_name}** (Site: {site})\n"
+                
+                response += "\nPlease enter the number of the door you want to unlock."
+                return response
+        
+        except Exception as e:
+            logger.error(f"Error searching for doors: {e}")
+            return f"Error searching for doors: {str(e)}"
+    
     # ===== HELP =====
     if intent == "show_help":
         return """**Available Commands:**
@@ -537,6 +863,8 @@ def generate_response(intent_data: Dict) -> str:
 **Door Access:**
 - "What doors do I have access to?"
 - "Show my access points"
+- "Unlock door [name/ID]"
+- "Open the main entrance"
 
 **Entry History:**
 - "Where did I enter today?"
@@ -548,6 +876,9 @@ def generate_response(intent_data: Dict) -> str:
 **Access Status:**
 - "Show denied access attempts"
 - "Show granted entries"
+
+**Event Details:**
+- "Show event [GUID]"
 
 **Account:**
 - "Show my account"
@@ -566,8 +897,10 @@ Ask me a question to get started."""
 
 Available functions:
 - Access control points
+- Unlock doors
 - Access entry history
 - Denied/granted access filtering
+- Event details lookup
 - Account information
 
 Please rephrase your request."""
@@ -595,6 +928,9 @@ Please rephrase your request."""
     elif response_type == "entries":
         days = api_response.get("days")
         response += format_entry_response(data, days)
+    elif response_type == "unlock":
+        access_point_id = api_response.get("access_point_id")
+        response += f"✅ Successfully unlocked access point {access_point_id}!"
     else:
         response += "Request completed successfully."
     
@@ -642,6 +978,41 @@ def process_user_message(message: str):
         "assistant_response": assistant_response
     })
 
+# ========== NEW: UNLOCK DOOR FLOW FUNCTION ==========
+
+def initiate_unlock_door_flow():
+    """Initiate the unlock door flow from sidebar button"""
+    try:
+        client = st.session_state.api_client
+        all_points = client.get_access_points()
+        
+        if not all_points:
+            process_user_message("No doors available")
+            return
+        
+        # Show available doors
+        response = f"**Available Doors ({len(all_points)}):**\n\n"
+        for idx, point in enumerate(all_points, 1):
+            point_name = point.get('name', point.get('access_point_name', 'Unknown'))
+            site = point.get('site_name', 'Unknown Site')
+            response += f"{idx}. **{point_name}** (Site: {site})\n"
+        
+        response += "\nWhich door would you like to unlock? (Enter the number or name)"
+        
+        # Store options for selection
+        st.session_state.pending_door_options = all_points
+        
+        # Add to chat
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response,
+            "suggestions": []
+        })
+        
+    except Exception as e:
+        logger.error(f"Error initiating unlock flow: {e}")
+        process_user_message("Error loading doors")
+
 # ========== MAIN APP ==========
 
 st.title("Alta Video Assistant")
@@ -685,6 +1056,11 @@ with st.sidebar:
         process_user_message("Show denied access attempts")
         st.rerun()
     
+    # ========== NEW: UNLOCK DOOR BUTTON ==========
+    if st.button("🔓 Unlock Door", use_container_width=True):
+        initiate_unlock_door_flow()
+        st.rerun()
+    
     st.divider()
     
     if st.button("Clear Chat", use_container_width=True):
@@ -692,6 +1068,9 @@ with st.sidebar:
         st.session_state.conversation_history = []
         st.session_state.last_intent = None
         st.session_state.last_entries = None
+        st.session_state.pending_unlock = None
+        st.session_state.pending_door_options = None
+        st.session_state.awaiting_confirmation = False
         st.rerun()
 
 # Display chat messages
@@ -714,6 +1093,7 @@ if len(st.session_state.messages) == 0:
 Alta Video access control assistant. Available functions:
 
 **Door Access** - View accessible doors and access points
+**Unlock Doors** - Remotely unlock access points
 **Entry History** - View access event logs
 **Denied Access** - Check failed access attempts
 **Account Info** - View account details
