@@ -211,6 +211,41 @@ class AltaClient:
             logger.error(f"Failed to get access events: {str(e)}")
             raise
     
+    # ========== NEW: GET SINGLE ACCESS EVENT BY GUID ==========
+    
+    def get_access_event_by_guid(self, guid: str) -> Optional[Dict]:
+        """
+        Get a single access event by its GUID
+        
+        Args:
+            guid: The unique identifier of the access event
+            
+        Returns:
+            Access event dictionary or None if not found
+            
+        Raises:
+            AltaAPIError: On API errors or network issues
+        """
+        endpoint = f"/api/v1/accessEvents/{guid}"
+        
+        try:
+            logger.info(f"Fetching access event with GUID: {guid}")
+            response = self._make_request('GET', endpoint)
+            
+            if response:
+                logger.info(f"Retrieved access event: {guid}")
+                return response
+            
+            logger.warning(f"Access event not found: {guid}")
+            return None
+            
+        except AltaAPIError as e:
+            if "not found" in str(e).lower():
+                logger.warning(f"Access event not found: {guid}")
+                return None
+            logger.error(f"Failed to get access event {guid}: {str(e)}")
+            raise
+    
     def get_entries_today(self) -> List[Dict]:
         """
         Get today's access events
@@ -348,6 +383,34 @@ class AltaClient:
             return points
         except AltaAPIError as e:
             logger.error(f"Failed to get available access points: {str(e)}")
+            raise
+    
+    # ========== NEW: UNLOCK ACCESS POINT ==========
+    
+    def unlock_access_point(self, access_point_id: str) -> Dict:
+        """
+        Unlock an access control point (door)
+        
+        Args:
+            access_point_id: The ID of the access point to unlock
+            
+        Returns:
+            Empty dict if successful (204 response) or response JSON if present
+            
+        Raises:
+            AltaAPIError: On invalid ID, insufficient permissions, or other API errors
+        """
+        endpoint = f"/api/v1/accessControlPoints/{access_point_id}/unlock"
+        
+        try:
+            logger.info(f"Attempting to unlock access point: {access_point_id}")
+            response = self._make_request('POST', endpoint)
+            
+            logger.info(f"Successfully unlocked access point: {access_point_id}")
+            return response if response else {}
+            
+        except AltaAPIError as e:
+            logger.error(f"Failed to unlock access point {access_point_id}: {str(e)}")
             raise
     
     # ========== FILTERING HELPERS ==========
