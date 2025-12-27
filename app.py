@@ -475,6 +475,18 @@ def analyze_intent(user_message: str) -> Dict:
             ]
         }
     
+    # ===== DEBUG: SHOW DOOR STRUCTURE =====
+    elif "debug doors" in message_lower or "door structure" in message_lower:
+        return {
+            "intent": "debug_doors",
+            "api": None,
+            "params": {},
+            "uses_context": False,
+            "confidence_message": None,
+            "requires_confirmation": False,
+            "follow_up_suggestions": []
+        }
+    
     # ===== UNSUPPORTED =====
     else:
         return {
@@ -908,6 +920,31 @@ Ask me a question to get started."""
     elif intent == "show_account":
         user = st.session_state.current_user
         return format_account_response(user)
+    
+    # ===== DEBUG DOORS =====
+    elif intent == "debug_doors":
+        try:
+            client = st.session_state.api_client
+            all_points = client.get_access_points()
+            
+            if not all_points:
+                return "No access points found."
+            
+            # Show structure of first door
+            first_door = all_points[0]
+            response = "**First Door Structure:**\n\n"
+            response += f"```json\n{first_door}\n```\n\n"
+            response += f"**Available Keys:** {list(first_door.keys())}\n\n"
+            
+            # Try to identify which field might be the ID
+            response += "**Potential ID fields:**\n"
+            for key, value in first_door.items():
+                if 'id' in key.lower() or key in ['guid', 'uuid', 'key']:
+                    response += f"- {key}: {value}\n"
+            
+            return response
+        except Exception as e:
+            return f"Error getting door structure: {str(e)}"
     
     # ===== UNSUPPORTED =====
     elif intent == "unsupported":
