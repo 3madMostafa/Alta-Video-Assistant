@@ -613,7 +613,8 @@ def format_access_points_response(points: List[Dict]) -> str:
         name = point.get('name', point.get('access_point_name', 'Unknown Point'))
         site = point.get('site_name', point.get('site', 'Unknown Site'))
         point_type = point.get('type', 'Access Point')
-        point_id = point.get('id', 'N/A')
+        # Try multiple possible ID field names
+        point_id = point.get('id') or point.get('accessPointId') or point.get('access_point_id') or 'N/A'
         
         response += f"**{name}**\n"
         response += f"   Site: {site}\n"
@@ -750,7 +751,13 @@ def generate_response(intent_data: Dict) -> str:
         
         selected_door = options[selection - 1]
         door_name = selected_door.get('name', selected_door.get('access_point_name', 'Unknown Door'))
-        door_id = selected_door.get('id')
+        # Try multiple possible ID field names
+        door_id = selected_door.get('id') or selected_door.get('accessPointId') or selected_door.get('access_point_id')
+        
+        if not door_id:
+            logger.error(f"No ID found for door: {selected_door}")
+            st.session_state.pending_door_options = None
+            return f"Error: Could not find ID for {door_name}. Available fields: {list(selected_door.keys())}"
         
         # Store pending unlock and request confirmation
         st.session_state.pending_unlock = {"id": door_id, "name": door_name}
@@ -792,7 +799,13 @@ def generate_response(intent_data: Dict) -> str:
         try:
             client = st.session_state.api_client
             all_points = client.get_access_points()
-            matching_point = next((p for p in all_points if str(p.get('id')) == access_point_id), None)
+            # Try to match by multiple possible ID field names
+            matching_point = None
+            for p in all_points:
+                point_id = p.get('id') or p.get('accessPointId') or p.get('access_point_id')
+                if str(point_id) == access_point_id:
+                    matching_point = p
+                    break
             
             if matching_point:
                 door_name = matching_point.get('name', matching_point.get('access_point_name', f'Door {access_point_id}'))
@@ -832,7 +845,12 @@ def generate_response(intent_data: Dict) -> str:
                 # Single match - request confirmation
                 matched_door = matches[0]
                 matched_name = matched_door.get('name', matched_door.get('access_point_name', 'Unknown Door'))
-                matched_id = matched_door.get('id')
+                # Try multiple possible ID field names
+                matched_id = matched_door.get('id') or matched_door.get('accessPointId') or matched_door.get('access_point_id')
+                
+                if not matched_id:
+                    logger.error(f"No ID found for door: {matched_door}")
+                    return f"Error: Could not find ID for {matched_name}. Available fields: {list(matched_door.keys())}"
                 
                 st.session_state.pending_unlock = {"id": matched_id, "name": matched_name}
                 st.session_state.awaiting_confirmation = True
@@ -990,12 +1008,21 @@ def initiate_unlock_door_flow():
             process_user_message("No doors available")
             return
         
+        # Log the structure of the first door for debugging
+        if all_points:
+            logger.info(f"Sample door structure: {all_points[0]}")
+            logger.info(f"Available keys: {list(all_points[0].keys())}")
+        
         # Show available doors
         response = f"**Available Doors ({len(all_points)}):**\n\n"
         for idx, point in enumerate(all_points, 1):
             point_name = point.get('name', point.get('access_point_name', 'Unknown'))
             site = point.get('site_name', 'Unknown Site')
+            # Try to find and display ID
+            point_id = point.get('id') or point.get('accessPointId') or point.get('access_point_id')
             response += f"{idx}. **{point_name}** (Site: {site})\n"
+            if point_id:
+                response += f"   ID: {point_id}\n"
         
         response += "\nWhich door would you like to unlock? (Enter the number or name)"
         
